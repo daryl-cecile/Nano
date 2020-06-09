@@ -5,6 +5,7 @@
  * @license     MIT public license
  *
  * Date Created: 06/06/2020
+ * Repo: https://github.com/daryl-cecile/Nano
  */
 namespace Nano;
 
@@ -37,9 +38,14 @@ class Router{
         });
     }
 
+    public static function init($basePath=""){
+        return new self($basePath);
+    }
+
     private function patternToRegExp($pattern){
         $pattern = preg_replace('/([()<>$.+]|\[|\]|\^)/m', "\\\\$1", $pattern);
         $pattern = preg_replace('/(\/)/m', '\\/', $pattern);
+        $pattern = preg_replace('/([ ])/m', '[ ]', $pattern);
 
         $re = '/:(?<ctag>[a-zA-Z_]+)|{(?<btag>[a-zA-Z0-9 _-]+)}/m';
         $subst = '(?<$1$2>.+)';
@@ -49,20 +55,19 @@ class Router{
         $re = '/(\*)/m';
         $result = preg_replace($re, '(.+)', $result);
 
-        $result = preg_replace('/([{}])/m', "\\\\$1", $result);
+        $result = "^" . preg_replace('/([{}])/m', "\\\\$1", $result) . "$";
 
-        return "^$result";
+        return $result;
+    }
+
+    private function generateRegExpString($pattern){
+        return "/" . $this->patternToRegExp($pattern) . "/m";
     }
 
     private function parsePattern($pattern, $str){
-        if ($pattern === $str){
-            return [
-                0 => $str
-            ];
-        }
-        $re = "/" . $this->patternToRegExp($pattern) . "/m";
+        $re = $this->generateRegExpString($pattern);
         preg_match_all($re, $str, $matches, PREG_SET_ORDER, 0);
-        return $matches;
+        return count($matches) > 0 ? $matches[0] : null;
     }
 
     private function setStub(array $methods, String $pattern, callable $handler){
@@ -72,6 +77,7 @@ class Router{
             $this->routes[$method][] = [
                 'pattern' => $pattern,
                 'handler' => $handler,
+                'isMiddleware' => false
             ];
         }
     }
@@ -91,6 +97,7 @@ class Router{
                     [
                         'pattern' => $pattern,
                         'handler' => $handler,
+                        'isMiddleware' => true
                     ]
                 ]
                 ,
@@ -211,13 +218,24 @@ class Router{
         foreach($routes as $route){
             $continueNextHandler = false;
             $matches = $this->parsePattern($route["pattern"], $uri);
+
             if ($matches){
 
                 $request = $reqInfo; // copy by value
                 $request['params'] = $matches;
-                $request['uri'] = $matches[0];
+                $request['uri'] = $_SERVER["REQUEST_URI"];
                 $request['query'] = $_GET;
                 $request['body'] = $_POST;
+                $request['method'] = $_SERVER['REQUEST_METHOD'];
+                $request['pattern'] = $this->generateRegExpString($route["pattern"]);
+                $request['var'] = [
+                    "POST" => function($key, $fallback=null){
+                        return isset($_POST[$key]) ? $_POST[$key] : $fallback;
+                    },
+                    "GET" => function($key, $fallback=null){
+                        return isset($_GET[$key]) ? $_GET[$key] : $fallback;
+                    }
+                ];
 
                 $response = [
                     "redirect" => function($url, bool $isPermanent=false){
@@ -245,7 +263,7 @@ class Router{
                     $continueNextHandler = true;
                 });
 
-                $count++;
+                if ($route['isMiddleware'] === false) $count++;
 
                 if ($continueNextHandler === false) break;
             }
@@ -267,7 +285,8 @@ class Router{
 
         if ($numHandled === 0) {
             if ($this->callbacks["notFound"]) {
-                $request = $this->reqMethod; // copy by value
+                $request = [];
+                $request['method'] = $this->reqMethod; // copy by value
                 $request['uri'] = $this->getRelativeURL();
 
                 $response = [
